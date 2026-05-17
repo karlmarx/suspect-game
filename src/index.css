@@ -1,0 +1,78 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #0a0a0f;
+  --color-surface: #14141f;
+  --color-card: #1e1e2e;
+  --color-card-hover: #282840;
+  --color-dim: #334155;
+  --color-muted: #64748b;
+  --color-text: #e2e8f0;
+  --color-pink: #f472b6;
+  --color-blue: #38bdf8;
+  --color-amber: #fbbf24;
+  --color-green: #4ade80;
+  --color-red: #ef4444;
+
+  --font-mono: "Space Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-sans: "DM Sans", system-ui, sans-serif;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-bg);
+    color: var(--color-text);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+}
+
+@layer utilities {
+  .text-glow-pink {
+    text-shadow: 0 0 30px rgba(244, 114, 182, 0.4);
+  }
+
+  .text-glow-amber {
+    text-shadow: 0 0 30px rgba(251, 191, 36, 0.5);
+  }
+
+  .neon-underline {
+    background: linear-gradient(90deg, var(--color-pink), var(--color-blue));
+  }
+}
+
+@keyframes pulse-soft {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes vote-shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-3px); }
+  75% { transform: translateX(3px); }
+}
+
+.animate-pulse-soft {
+  animation: pulse-soft 1.5s ease-in-out infinite;
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out;
+}
