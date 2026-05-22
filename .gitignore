@@ -12,9 +12,18 @@ dist
 dist-ssr
 *.local
 
-# PartyKit
-.partykit
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+
+# Wrangler / Cloudflare
+.wrangler
 .dev.vars
+
+# Vercel
+.vercel
 
 # env
 .env

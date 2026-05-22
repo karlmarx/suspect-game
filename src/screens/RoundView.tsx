@@ -16,6 +16,12 @@ interface RoundViewProps {
 }
 
 export function RoundView({ state, offsetMs, isHost, send, errorMessage, clearError }: RoundViewProps) {
+  useEffect(() => {
+    if (!errorMessage) return;
+    const t = setTimeout(clearError, 3500);
+    return () => clearTimeout(t);
+  }, [errorMessage, clearError]);
+
   const round = state.round;
   if (!round) {
     return (
@@ -29,13 +35,6 @@ export function RoundView({ state, offsetMs, isHost, send, errorMessage, clearEr
   const isYourTurn =
     round.phase === "clue" && round.clueOrder[round.currentClueIndex] === yourId;
   const me = state.players.find((p) => p.id === yourId);
-
-  // Auto-clear error after a few seconds
-  useEffect(() => {
-    if (!errorMessage) return;
-    const t = setTimeout(clearError, 3500);
-    return () => clearTimeout(t);
-  }, [errorMessage, clearError]);
 
   const phaseTitle: Record<typeof round.phase, string> = {
     lobby: "LOBBY",

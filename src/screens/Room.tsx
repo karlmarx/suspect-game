@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Navigate, useParams } from "react-router-dom";
 import { JoinForm } from "./JoinForm";
 import { Lobby } from "./Lobby";
@@ -13,22 +13,17 @@ export function Room() {
   const upperCode = (code ?? "").toUpperCase();
   const sessionId = useMemo(() => getOrCreateSessionId(), []);
   const [profile, setProfile] = useState(() => loadProfile());
-  const [hasJoined, setHasJoined] = useState(false);
+  const [locallyJoined, setLocallyJoined] = useState(false);
 
   const { state, connected, lastError, serverTimeOffsetMs, send, clearError } = useGameRoom({
     roomCode: upperCode,
     sessionId,
-    autoJoin: hasJoined && profile ? profile : undefined,
+    autoJoin: locallyJoined && profile ? profile : undefined,
     enabled: isValidRoomCode(upperCode),
   });
 
-  // If we got a state update where we appear in the players list, we're joined.
-  useEffect(() => {
-    if (!state) return;
-    if (state.players.some((p) => p.id === sessionId)) {
-      setHasJoined(true);
-    }
-  }, [state, sessionId]);
+  const isPlayerInRoom = state?.players.some((p) => p.id === sessionId) ?? false;
+  const hasJoined = locallyJoined || isPlayerInRoom;
 
   if (!isValidRoomCode(upperCode)) {
     return <Navigate to="/" replace />;
@@ -38,7 +33,7 @@ export function Room() {
     const p = { name, emoji };
     saveProfile(p);
     setProfile(p);
-    setHasJoined(true);
+    setLocallyJoined(true);
     send({ type: "join", name, emoji, sessionId });
   };
 

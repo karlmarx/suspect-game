@@ -1,4 +1,4 @@
-import type * as Party from "partykit/server";
+import { Server, type Connection, type ConnectionContext } from "partyserver";
 import { generateGrid, pickCategory } from "../src/shared/words";
 import {
   PHASE_DURATIONS_MS,
@@ -13,6 +13,11 @@ import {
   type ServerMessage,
   type Vote,
 } from "../src/shared/types";
+
+export interface Env {
+  Main: DurableObjectNamespace;
+  APP_PASSWORD?: string;
+}
 
 interface InternalRound {
   number: number;
@@ -45,7 +50,6 @@ interface RoomState {
   lastActivity: number;
 }
 
-const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
 const SCORE_VOTE_CORRECT = 2;
 const SCORE_SUSPECT_STEAL = 2;
 const SCORE_SUSPECT_ESCAPE = 3;
@@ -83,74 +87,56 @@ function validateClue(word: string, gridWords: string[]): string | null {
   return null;
 }
 
-export default class Server implements Party.Server {
-  readonly room: Party.Room;
-  state: RoomState;
-  /** Cached room code. `this.room.id` is not accessible during alarm callbacks,
-   *  so we save it to storage on connect and reload it in onStart. */
-  private roomCode: string = "";
+export class GameServer extends Server<Env> {
+  static options = { hibernate: true };
 
-  constructor(room: Party.Room) {
-    this.room = room;
-    this.state = {
-      status: "lobby",
-      hostId: null,
-      players: new Map(),
-      joinOrder: [],
-      totalRounds: 0,
-      currentRoundNumber: 0,
-      round: null,
-      connectionsBySession: new Map(),
-      lastActivity: Date.now(),
-    };
-  }
+  state: RoomState = {
+    status: "lobby",
+    hostId: null,
+    players: new Map(),
+    joinOrder: [],
+    totalRounds: 0,
+    currentRoundNumber: 0,
+    round: null,
+    connectionsBySession: new Map(),
+    lastActivity: Date.now(),
+  };
 
   async onStart() {
-    // Reload state from durable storage (survives hibernation)
-    const saved = await this.room.storage.get<SerializedRoomState>("state");
+    const saved = await this.ctx.storage.get<SerializedRoomState>("state");
     if (saved) {
       this.state = deserialize(saved);
     }
-    const code = await this.room.storage.get<string>("roomCode");
-    if (code) this.roomCode = code;
   }
 
   async persist() {
     this.state.lastActivity = Date.now();
-    await this.room.storage.put("state", serialize(this.state));
+    await this.ctx.storage.put("state", serialize(this.state));
   }
 
-  async onConnect(conn: Party.Connection, ctx: Party.ConnectionContext) {
-    // Cache the room ID once — it is not accessible during alarm callbacks.
-    if (!this.roomCode) {
-      this.roomCode = this.room.id;
-      await this.room.storage.put("roomCode", this.roomCode);
-    }
-    // Send room code immediately
+  async onConnect(conn: Connection, ctx: ConnectionContext) {
     this.sendStateToOne(conn);
-    void ctx; // unused
+    void ctx;
   }
 
-  onClose(conn: Party.Connection) {
-    // Find session by connectionId, mark player disconnected
+  async onClose(conn: Connection) {
     for (const [sessionId, connId] of this.state.connectionsBySession) {
       if (connId === conn.id) {
         const player = this.state.players.get(sessionId);
-        if (player) {
-          player.isConnected = false;
-        }
+        if (player) player.isConnected = false;
         this.state.connectionsBySession.delete(sessionId);
         break;
       }
     }
     this.broadcastState();
-    void this.persist();
+    await this.persist();
   }
 
-  async onMessage(raw: string, conn: Party.Connection) {
+  async onMessage(conn: Connection, raw: string | ArrayBuffer) {
+    const text = typeof raw === "string" ? raw : new TextDecoder().decode(raw);
     let msg: ClientMessage;
     try {
-      msg = JSON.parse(raw);
+      msg = JSON.parse(text);
     } catch {
       this.sendError(conn, "Invalid JSON");
       return;
@@ -200,13 +186,11 @@ export default class Server implements Party.Server {
     }
   }
 
-  /** Cloudflare DO alarm fires here. Used for phase transitions. */
   async onAlarm() {
     const round = this.state.round;
     if (!round) return;
     if (Date.now() < round.phaseEndsAt - 100) {
-      // Re-schedule if alarm fired too early
-      await this.room.storage.setAlarm(round.phaseEndsAt);
+      await this.ctx.storage.setAlarm(round.phaseEndsAt);
       return;
     }
     await this.autoAdvancePhase();
@@ -214,19 +198,28 @@ export default class Server implements Party.Server {
 
   // ---------- Handlers ----------
 
-  private sessionFromConn(conn: Party.Connection): string | null {
+  private sessionFromConn(conn: Connection): string | null {
     for (const [sessionId, connId] of this.state.connectionsBySession) {
       if (connId === conn.id) return sessionId;
     }
     return null;
   }
 
+  private checkPassword(provided: string | undefined): boolean {
+    const expected = this.env.APP_PASSWORD ?? "";
+    if (!expected) return true;
+    return provided === expected;
+  }
+
   private async handleJoin(
     msg: Extract<ClientMessage, { type: "join" }>,
-    conn: Party.Connection,
+    conn: Connection,
   ) {
+    if (!this.checkPassword(msg.password)) {
+      this.sendError(conn, "Incorrect password");
+      return;
+    }
     if (this.state.status !== "lobby") {
-      // Allow rejoin if the session was already a player
       if (this.state.players.has(msg.sessionId)) {
         return this.handleRejoin({ type: "rejoin", sessionId: msg.sessionId }, conn);
       }
@@ -242,7 +235,6 @@ export default class Server implements Party.Server {
       this.sendError(conn, nameErr);
       return;
     }
-    // Name uniqueness within room (case-insensitive)
     const lower = msg.name.trim().toLowerCase();
     for (const p of this.state.players.values()) {
       if (p.name.toLowerCase() === lower && p.id !== msg.sessionId) {
@@ -252,7 +244,6 @@ export default class Server implements Party.Server {
     }
     const existing = this.state.players.get(msg.sessionId);
     if (existing) {
-      // Treat as rejoin under same session
       existing.isConnected = true;
       this.state.connectionsBySession.set(msg.sessionId, conn.id);
       this.sendYouAre(conn, msg.sessionId);
@@ -279,8 +270,12 @@ export default class Server implements Party.Server {
 
   private async handleRejoin(
     msg: Extract<ClientMessage, { type: "rejoin" }>,
-    conn: Party.Connection,
+    conn: Connection,
   ) {
+    if (!this.checkPassword(msg.password)) {
+      this.sendError(conn, "Incorrect password");
+      return;
+    }
     const player = this.state.players.get(msg.sessionId);
     if (!player) {
       this.sendError(conn, "Unknown session — please rejoin with name");
@@ -295,7 +290,7 @@ export default class Server implements Party.Server {
 
   private async handleStartGame(
     msg: Extract<ClientMessage, { type: "start-game" }>,
-    conn: Party.Connection,
+    conn: Connection,
   ) {
     const sessionId = this.sessionFromConn(conn);
     if (sessionId !== this.state.hostId) {
@@ -342,14 +337,14 @@ export default class Server implements Party.Server {
       phaseEndsAt,
       resolution: null,
     };
-    await this.room.storage.setAlarm(phaseEndsAt);
+    await this.ctx.storage.setAlarm(phaseEndsAt);
     this.broadcastState();
     await this.persist();
   }
 
   private async handleSubmitClue(
     msg: Extract<ClientMessage, { type: "submit-clue" }>,
-    conn: Party.Connection,
+    conn: Connection,
   ) {
     const sessionId = this.sessionFromConn(conn);
     const round = this.state.round;
@@ -373,9 +368,8 @@ export default class Server implements Party.Server {
     if (round.currentClueIndex >= round.clueOrder.length) {
       await this.transitionPhase("discuss");
     } else {
-      // Reset 30s timer for next player
       round.phaseEndsAt = Date.now() + PHASE_DURATIONS_MS.clue;
-      await this.room.storage.setAlarm(round.phaseEndsAt);
+      await this.ctx.storage.setAlarm(round.phaseEndsAt);
       this.broadcastState();
     }
     await this.persist();
@@ -383,7 +377,7 @@ export default class Server implements Party.Server {
 
   private async handleSubmitVote(
     msg: Extract<ClientMessage, { type: "submit-vote" }>,
-    conn: Party.Connection,
+    conn: Connection,
   ) {
     const sessionId = this.sessionFromConn(conn);
     const round = this.state.round;
@@ -417,7 +411,7 @@ export default class Server implements Party.Server {
 
   private async handleSuspectGuess(
     msg: Extract<ClientMessage, { type: "submit-suspect-guess" }>,
-    conn: Party.Connection,
+    conn: Connection,
   ) {
     const sessionId = this.sessionFromConn(conn);
     const round = this.state.round;
@@ -439,7 +433,7 @@ export default class Server implements Party.Server {
     await this.finalizeResolution(true);
   }
 
-  private async handleAdvancePhase(conn: Party.Connection) {
+  private async handleAdvancePhase(conn: Connection) {
     const sessionId = this.sessionFromConn(conn);
     if (sessionId !== this.state.hostId) {
       this.sendError(conn, "Only host can advance phase");
@@ -448,7 +442,7 @@ export default class Server implements Party.Server {
     await this.autoAdvancePhase();
   }
 
-  private async handleNextRound(conn: Party.Connection) {
+  private async handleNextRound(conn: Connection) {
     const sessionId = this.sessionFromConn(conn);
     if (sessionId !== this.state.hostId) {
       this.sendError(conn, "Only host can start next round");
@@ -461,7 +455,7 @@ export default class Server implements Party.Server {
     if (this.state.currentRoundNumber >= this.state.totalRounds) {
       this.state.status = "finished";
       if (this.state.round) this.state.round.phase = "finished";
-      await this.room.storage.deleteAlarm();
+      await this.ctx.storage.deleteAlarm();
       this.broadcastState();
       await this.persist();
       return;
@@ -469,7 +463,7 @@ export default class Server implements Party.Server {
     await this.beginNextRound();
   }
 
-  private async handleResetGame(conn: Party.Connection) {
+  private async handleResetGame(conn: Connection) {
     const sessionId = this.sessionFromConn(conn);
     if (sessionId !== this.state.hostId) {
       this.sendError(conn, "Only host can reset");
@@ -480,14 +474,14 @@ export default class Server implements Party.Server {
     this.state.currentRoundNumber = 0;
     this.state.totalRounds = 0;
     for (const p of this.state.players.values()) p.score = 0;
-    await this.room.storage.deleteAlarm();
+    await this.ctx.storage.deleteAlarm();
     this.broadcastState();
     await this.persist();
   }
 
   private async handleExtendTimer(
     msg: Extract<ClientMessage, { type: "extend-timer" }>,
-    conn: Party.Connection,
+    conn: Connection,
   ) {
     const sessionId = this.sessionFromConn(conn);
     if (sessionId !== this.state.hostId) {
@@ -501,7 +495,7 @@ export default class Server implements Party.Server {
     }
     const seconds = Math.max(0, Math.min(120, Math.floor(msg.seconds)));
     round.phaseEndsAt += seconds * 1000;
-    await this.room.storage.setAlarm(round.phaseEndsAt);
+    await this.ctx.storage.setAlarm(round.phaseEndsAt);
     this.broadcastState();
     await this.persist();
   }
@@ -516,7 +510,6 @@ export default class Server implements Party.Server {
         await this.transitionPhase("clue");
         break;
       case "clue": {
-        // Auto-skip current player's turn (record empty clue), then advance
         const expected = round.clueOrder[round.currentClueIndex];
         if (expected) {
           round.clues.push({ playerId: expected, word: "(no clue)" });
@@ -526,7 +519,7 @@ export default class Server implements Party.Server {
           await this.transitionPhase("discuss");
         } else {
           round.phaseEndsAt = Date.now() + PHASE_DURATIONS_MS.clue;
-          await this.room.storage.setAlarm(round.phaseEndsAt);
+          await this.ctx.storage.setAlarm(round.phaseEndsAt);
           this.broadcastState();
           await this.persist();
         }
@@ -555,9 +548,9 @@ export default class Server implements Party.Server {
     const dur = PHASE_DURATIONS_MS[next];
     round.phaseEndsAt = dur > 0 ? Date.now() + dur : 0;
     if (round.phaseEndsAt > 0) {
-      await this.room.storage.setAlarm(round.phaseEndsAt);
+      await this.ctx.storage.setAlarm(round.phaseEndsAt);
     } else {
-      await this.room.storage.deleteAlarm();
+      await this.ctx.storage.deleteAlarm();
     }
     this.broadcastState();
     await this.persist();
@@ -584,7 +577,6 @@ export default class Server implements Party.Server {
     }
     const caught = !tie && topId === round.suspectId;
     if (caught) {
-      // Suspect gets one chance to guess
       await this.transitionPhase("suspect-guess");
     } else {
       await this.finalizeResolution(false);
@@ -621,21 +613,17 @@ export default class Server implements Party.Server {
     const deltas: RoundDelta[] = [];
 
     if (caught && guessCorrect) {
-      // Suspect steals
       this.applyScore(round.suspectId, SCORE_SUSPECT_STEAL, "Suspect stole the round", deltas);
     } else if (caught && !guessCorrect) {
-      // Voters who correctly identified the suspect score
       for (const v of round.votes) {
         if (v.targetPlayerId === round.suspectId) {
           this.applyScore(v.voterId, SCORE_VOTE_CORRECT, "Voted correctly", deltas);
         }
       }
     } else {
-      // Suspect escaped
       this.applyScore(round.suspectId, SCORE_SUSPECT_ESCAPE, "Suspect escaped", deltas);
     }
 
-    // Innocent bonus: any non-Suspect player who got zero votes
     for (const p of this.state.players.values()) {
       if (p.id === round.suspectId) continue;
       if (!counts[p.id]) {
@@ -658,7 +646,7 @@ export default class Server implements Party.Server {
     round.resolution = resolution;
     round.phase = "resolution";
     round.phaseEndsAt = 0;
-    await this.room.storage.deleteAlarm();
+    await this.ctx.storage.deleteAlarm();
     this.broadcastState();
     await this.persist();
   }
@@ -681,9 +669,6 @@ export default class Server implements Party.Server {
       const isKnownPlayer = !!player;
       const isSuspect = isKnownPlayer && forSessionId === r.suspectId;
       const isInnocent = isKnownPlayer && !isSuspect;
-      // Target word goes ONLY to confirmed innocent players.
-      // Unidentified observers and the Suspect both see `null`.
-      // Suspect is revealed only at resolution/finished.
       const revealSuspect = r.phase === "resolution" || r.phase === "finished";
       publicRound = {
         number: r.number,
@@ -706,7 +691,7 @@ export default class Server implements Party.Server {
       };
     }
     return {
-      roomCode: (this.roomCode || "").toUpperCase(),
+      roomCode: (this.name || "").toUpperCase(),
       status: this.state.status,
       hostId: this.state.hostId,
       yourPlayerId: player?.id ?? forSessionId,
@@ -720,21 +705,20 @@ export default class Server implements Party.Server {
 
   private broadcastState() {
     for (const [sessionId, connId] of this.state.connectionsBySession) {
-      const conn = this.room.getConnection(connId);
+      const conn = this.getConnection(connId);
       if (!conn) continue;
       const msg: ServerMessage = { type: "state", state: this.buildPublicState(sessionId) };
       conn.send(JSON.stringify(msg));
     }
   }
 
-  private sendStateToOne(conn: Party.Connection) {
-    // For initial connect before the client has identified itself
+  private sendStateToOne(conn: Connection) {
     const sessionId = this.sessionFromConn(conn) ?? "";
     const msg: ServerMessage = { type: "state", state: this.buildPublicState(sessionId) };
     conn.send(JSON.stringify(msg));
   }
 
-  private sendError(conn: Party.Connection, message: string) {
+  private sendError(conn: Connection, message: string) {
     const msg: ServerMessage = { type: "error", message };
     conn.send(JSON.stringify(msg));
   }
@@ -742,12 +726,12 @@ export default class Server implements Party.Server {
   private sendErrorToAll(message: string) {
     const msg: ServerMessage = { type: "error", message };
     for (const connId of this.state.connectionsBySession.values()) {
-      const conn = this.room.getConnection(connId);
+      const conn = this.getConnection(connId);
       conn?.send(JSON.stringify(msg));
     }
   }
 
-  private sendYouAre(conn: Party.Connection, playerId: string) {
+  private sendYouAre(conn: Connection, playerId: string) {
     const msg: ServerMessage = { type: "you-are", playerId };
     conn.send(JSON.stringify(msg));
   }
@@ -792,5 +776,3 @@ function deserialize(s: SerializedRoomState): RoomState {
     lastActivity: s.lastActivity,
   };
 }
-
-void TWO_HOURS_MS; // (planned: cron-style sweep for expiry; PartyKit auto-hibernates idle rooms anyway)
