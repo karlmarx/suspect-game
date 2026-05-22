@@ -48,9 +48,13 @@ jobs:
       - name: Pick target URL
         id: target
         run: |
-          if [ "${{ github.event_name }}" = "deployment_status" ]; then
-            echo "url=${{ github.event.deployment_status.target_url }}" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.url }}" ]; then
+          # Default to the custom domain. Vercel's deployment_status target_url
+          # is the deployment-specific *.vercel.app URL which has Deployment
+          # Protection enabled and returns 401 to unauth'd browsers; only
+          # suspect.93.fyi (and the project-canonical *.vercel.app) are
+          # publicly reachable, and the custom domain always aliases the
+          # latest production deploy.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.url }}" ]; then
             echo "url=${{ inputs.url }}" >> "$GITHUB_OUTPUT"
           else
             echo "url=https://suspect.93.fyi" >> "$GITHUB_OUTPUT"
