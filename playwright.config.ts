@@ -20,18 +20,18 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: "npm run dev:party",
+      command: "npx partykit dev",
       port: 1999,
       reuseExistingServer: !process.env.CI,
-      timeout: 120_000,
+      timeout: 180_000,
       stdout: "pipe",
       stderr: "pipe",
     },
     {
-      command: "npm run dev",
-      url: "http://127.0.0.1:5173",
+      command: "npx vite --port 5173 --host 127.0.0.1",
+      port: 5173,
       reuseExistingServer: !process.env.CI,
-      timeout: 60_000,
+      timeout: 180_000,
       stdout: "pipe",
       stderr: "pipe",
     },
