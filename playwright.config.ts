@@ -20,7 +20,7 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: "npx partykit dev",
+      command: "npx wrangler dev --port 1999 --ip 127.0.0.1",
       port: 1999,
       reuseExistingServer: !process.env.CI,
       timeout: 180_000,

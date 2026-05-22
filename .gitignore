@@ -18,9 +18,12 @@ dist-ssr
 /blob-report/
 /playwright/.cache/
 
-# PartyKit
-.partykit
+# Wrangler / Cloudflare
+.wrangler
 .dev.vars
+
+# Vercel
+.vercel
 
 # env
 .env
