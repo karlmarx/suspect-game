@@ -38,7 +38,9 @@ export function useGameRoom({
   const [offset, setOffset] = useState(0);
   const socketRef = useRef<PartySocket | null>(null);
   const autoJoinRef = useRef(autoJoin);
-  autoJoinRef.current = autoJoin;
+  useEffect(() => {
+    autoJoinRef.current = autoJoin;
+  });
 
   useEffect(() => {
     if (!enabled || !roomCode || !sessionId) return;
