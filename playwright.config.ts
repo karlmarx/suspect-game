@@ -22,7 +22,7 @@ export default defineConfig({
     command: "npm run dev:all",
     url: "http://127.0.0.1:5173",
     reuseExistingServer: !process.env.CI,
-    timeout: 60_000,
+    timeout: 180_000,
     stdout: "pipe",
     stderr: "pipe",
   },
