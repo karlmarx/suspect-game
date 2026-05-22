@@ -221,10 +221,20 @@ export default class Server implements Party.Server {
     return null;
   }
 
+  private checkPassword(provided: string | undefined): boolean {
+    const expected = (this.room.env.APP_PASSWORD as string | undefined) ?? "";
+    if (!expected) return true;
+    return provided === expected;
+  }
+
   private async handleJoin(
     msg: Extract<ClientMessage, { type: "join" }>,
     conn: Party.Connection,
   ) {
+    if (!this.checkPassword(msg.password)) {
+      this.sendError(conn, "Incorrect password");
+      return;
+    }
     if (this.state.status !== "lobby") {
       // Allow rejoin if the session was already a player
       if (this.state.players.has(msg.sessionId)) {
@@ -281,6 +291,10 @@ export default class Server implements Party.Server {
     msg: Extract<ClientMessage, { type: "rejoin" }>,
     conn: Party.Connection,
   ) {
+    if (!this.checkPassword(msg.password)) {
+      this.sendError(conn, "Incorrect password");
+      return;
+    }
     const player = this.state.players.get(msg.sessionId);
     if (!player) {
       this.sendError(conn, "Unknown session — please rejoin with name");

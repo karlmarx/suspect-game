@@ -6,6 +6,7 @@ import type {
   ServerMessage,
 } from "../shared/types";
 import { getPartyHost } from "../lib/partyHost";
+import { getStoredPassword } from "../lib/password";
 
 export interface UseGameRoomOptions {
   roomCode: string;
@@ -52,7 +53,11 @@ export function useGameRoom({
       // Always try rejoin first; server falls back to error on unknown session
       // and we then attempt a fresh join with name/emoji if provided.
       socket.send(
-        JSON.stringify({ type: "rejoin", sessionId } satisfies ClientMessage),
+        JSON.stringify({
+          type: "rejoin",
+          sessionId,
+          password: getStoredPassword(),
+        } satisfies ClientMessage),
       );
     };
 
@@ -76,6 +81,7 @@ export function useGameRoom({
               name: autoJoinRef.current.name,
               emoji: autoJoinRef.current.emoji,
               sessionId,
+              password: getStoredPassword(),
             } satisfies ClientMessage),
           );
           return;

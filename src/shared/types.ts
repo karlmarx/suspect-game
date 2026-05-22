@@ -76,8 +76,8 @@ export interface PublicState {
 }
 
 export type ClientMessage =
-  | { type: "join"; name: string; emoji: string; sessionId: string }
-  | { type: "rejoin"; sessionId: string }
+  | { type: "join"; name: string; emoji: string; sessionId: string; password?: string }
+  | { type: "rejoin"; sessionId: string; password?: string }
   | { type: "start-game"; totalRounds: number }
   | { type: "submit-clue"; word: string }
   | { type: "submit-vote"; targetPlayerId: string }

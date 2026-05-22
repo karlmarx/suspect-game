@@ -1,21 +1,12 @@
 import { useState, type ReactNode } from "react";
 import { Glow } from "./Glow";
 import { PrimaryButton } from "./PrimaryButton";
-
-const STORAGE_KEY = "suspect.gate.v1";
-
-function expectedPassword(): string {
-  return (import.meta.env.VITE_APP_PASSWORD as string | undefined) ?? "";
-}
+import { expectedPassword, getStoredPassword, setStoredPassword } from "../lib/password";
 
 function isUnlocked(): boolean {
   const pw = expectedPassword();
   if (!pw) return true;
-  try {
-    return localStorage.getItem(STORAGE_KEY) === pw;
-  } catch {
-    return false;
-  }
+  return getStoredPassword() === pw;
 }
 
 export function PasswordGate({ children }: { children: ReactNode }) {
@@ -28,11 +19,7 @@ export function PasswordGate({ children }: { children: ReactNode }) {
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     if (value === expectedPassword()) {
-      try {
-        localStorage.setItem(STORAGE_KEY, value);
-      } catch {
-        /* ignore */
-      }
+      setStoredPassword(value);
       setUnlocked(true);
     } else {
       setError(true);

@@ -10,7 +10,9 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "deploy:party": "partykit deploy"
+    "deploy:party": "partykit deploy",
+    "test:e2e": "playwright test",
+    "test:e2e:install": "playwright install --with-deps chromium"
   },
   "dependencies": {
     "partykit": "^0.0.115",
@@ -22,6 +24,7 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260517.1",
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.60.0",
     "@tailwindcss/vite": "^4.3.0",
     "@types/node": "^24.12.3",
     "@types/react": "^19.2.14",
