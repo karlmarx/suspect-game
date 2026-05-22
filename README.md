@@ -29,10 +29,15 @@ Open `http://localhost:5173` in 3+ browser windows (or incognito tabs / separate
 npm run deploy:party   # → suspect-game.<your-partykit-handle>.partykit.dev
 
 # Frontend (Vercel)
-VITE_PARTYKIT_HOST=suspect-game.<your-handle>.partykit.dev vercel --prod
+vercel --prod
 ```
 
-Set `VITE_PARTYKIT_HOST` in the Vercel project env so the SPA connects to the deployed PartyKit room.
+Set these in the Vercel project env (Production):
+
+- `VITE_PARTYKIT_HOST` — `suspect-game.<your-handle>.partykit.dev`
+- `VITE_APP_PASSWORD` — shared password gate; leave unset to disable
+
+To attach a subdomain, add it under Vercel project → Settings → Domains.
 
 ## Structure
 
