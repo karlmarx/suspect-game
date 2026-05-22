@@ -1,5 +1,21 @@
 import { Server, type Connection, type ConnectionContext } from "partyserver";
+import { TokenBucket } from "./tokenBucket";
 import { generateGrid, pickCategory } from "../src/shared/words";
+
+/** Max bytes a single WebSocket message may carry. Legitimate messages are
+ *  <500 bytes; anything larger is either bugged client or abuse. */
+const MAX_MESSAGE_BYTES = 4096;
+
+/** Per-connection token bucket: capacity 20, refill 10/sec. Real gameplay
+ *  is well under 2 msg/sec; this allows reasonable bursts (e.g. submitting
+ *  a clue then immediately seeing the next phase) but kills sustained spam. */
+const PER_CONN_BUCKET_CAPACITY = 20;
+const PER_CONN_BUCKET_REFILL_PER_SEC = 10;
+
+/** Max concurrent WebSocket connections per room. The player cap is 8, but
+ *  unauth observers can also hold sockets open between join and game-state
+ *  arrival; allow ~2x headroom for reconnect drift. */
+const MAX_CONNECTIONS_PER_ROOM = 16;
 import {
   PHASE_DURATIONS_MS,
   type ClientMessage,
@@ -16,6 +32,7 @@ import {
 
 export interface Env {
   Main: DurableObjectNamespace;
+  IpLimiter: DurableObjectNamespace;
   APP_PASSWORD?: string;
 }
 
@@ -102,6 +119,11 @@ export class GameServer extends Server<Env> {
     lastActivity: Date.now(),
   };
 
+  /** Per-connection message rate-limit buckets. Map<connId, TokenBucket>.
+   *  Buckets are in-memory only (lost on hibernation; re-created on first
+   *  message from a re-hydrated connection — which is the correct semantic). */
+  private readonly conn_buckets = new Map<string, TokenBucket>();
+
   async onStart() {
     const saved = await this.ctx.storage.get<SerializedRoomState>("state");
     if (saved) {
@@ -115,11 +137,44 @@ export class GameServer extends Server<Env> {
   }
 
   async onConnect(conn: Connection, ctx: ConnectionContext) {
+    // Hard cap on total live sockets to this room — protects against an attacker
+    // who knows a room code from opening N silent sockets.
+    const live = [...this.getConnections()].length;
+    if (live > MAX_CONNECTIONS_PER_ROOM) {
+      conn.close(1013, "Room at connection capacity");
+      return;
+    }
+    // Persist client IP on the connection state so onClose can release the
+    // global per-IP slot in IpRateLimiter. Best-effort: in local dev there's
+    // no CF header and we just skip the release call.
+    const ip =
+      ctx.request.headers.get("CF-Connecting-IP") ??
+      ctx.request.headers.get("X-Forwarded-For")?.split(",")[0]?.trim() ??
+      "";
+    if (ip) {
+      try {
+        conn.setState({ ip });
+      } catch {
+        // setState is a 2KB cap; an IP string is tiny so this should never throw.
+      }
+    }
     this.sendStateToOne(conn);
-    void ctx;
   }
 
   async onClose(conn: Connection) {
+    // Release the global per-IP slot if one was reserved at connect time.
+    const connState = (conn.state ?? {}) as { ip?: string };
+    if (connState.ip) {
+      try {
+        const limiter = (this.env.IpLimiter as DurableObjectNamespace & {
+          getByName(name: string): DurableObjectStub;
+        }).getByName("global");
+        await (limiter as unknown as { release(ip: string): Promise<void> }).release(connState.ip);
+      } catch (err) {
+        console.error("IpLimiter.release failed", err);
+      }
+    }
+    this.conn_buckets.delete(conn.id);
     for (const [sessionId, connId] of this.state.connectionsBySession) {
       if (connId === conn.id) {
         const player = this.state.players.get(sessionId);
@@ -133,6 +188,26 @@ export class GameServer extends Server<Env> {
   }
 
   async onMessage(conn: Connection, raw: string | ArrayBuffer) {
+    // Message size guard — reject before any allocation/parse.
+    const size = typeof raw === "string" ? raw.length : raw.byteLength;
+    if (size > MAX_MESSAGE_BYTES) {
+      this.sendError(conn, "Message too large");
+      conn.close(1009, "Message too large");
+      return;
+    }
+
+    // Per-connection token bucket — kills sustained message spam from a
+    // single socket without affecting normal play.
+    let bucket = this.conn_buckets.get(conn.id);
+    if (!bucket) {
+      bucket = new TokenBucket(PER_CONN_BUCKET_CAPACITY, PER_CONN_BUCKET_REFILL_PER_SEC);
+      this.conn_buckets.set(conn.id, bucket);
+    }
+    if (!bucket.tryConsume(1)) {
+      this.sendError(conn, "Rate limit exceeded");
+      return;
+    }
+
     const text = typeof raw === "string" ? raw : new TextDecoder().decode(raw);
     let msg: ClientMessage;
     try {

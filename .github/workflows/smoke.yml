@@ -1,0 +1,71 @@
+name: Smoke (live site)
+
+on:
+  # Fires when Vercel (or any deploy bot) posts a deployment_status with
+  # state=success to GitHub. Production deploys land here within seconds.
+  deployment_status:
+
+  # Hourly check against the live site catches drift the deploy-triggered run
+  # wouldn't (expired certs, backend regressions, DNS issues).
+  schedule:
+    - cron: "17 * * * *"
+
+  # Manual trigger for ad-hoc checks.
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Override target URL (default: https://suspect.93.fyi)"
+        required: false
+        default: ""
+
+jobs:
+  smoke:
+    # Only run the deployment_status path on successful production deploys.
+    if: >-
+      github.event_name != 'deployment_status' ||
+      (github.event.deployment_status.state == 'success' &&
+       github.event.deployment.environment == 'Production')
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - run: npx playwright install --with-deps chromium
+
+      - name: Pick target URL
+        id: target
+        run: |
+          if [ "${{ github.event_name }}" = "deployment_status" ]; then
+            echo "url=${{ github.event.deployment_status.target_url }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.url }}" ]; then
+            echo "url=${{ inputs.url }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "url=https://suspect.93.fyi" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Smoke test
+        env:
+          PROD_BASE_URL: ${{ steps.target.outputs.url }}
+        run: npx playwright test -c playwright.prod.config.ts
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report-smoke
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
