@@ -14,9 +14,9 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm install --no-audit --no-fund
       - run: npm run lint
-        continue-on-error: true
+      - run: npm run test:unit
       - run: npm run build
 
   e2e:
@@ -27,7 +27,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm install --no-audit --no-fund
       - name: Cache Playwright browsers
         uses: actions/cache@v4
         with:
