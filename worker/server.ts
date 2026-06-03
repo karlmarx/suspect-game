@@ -1,5 +1,6 @@
 import { Server, type Connection, type ConnectionContext } from "partyserver";
 import { TokenBucket } from "./tokenBucket";
+import { pickFairSuspect } from "./rotation";
 import { generateGrid, pickCategory } from "../src/shared/words";
 
 /** Max bytes a single WebSocket message may carry. Legitimate messages are
@@ -64,6 +65,8 @@ interface RoomState {
   round: InternalRound | null;
   /** sessionId -> connectionId (current live socket) */
   connectionsBySession: Map<string, string>;
+  /** sessionId -> number of past Suspect rounds this game; drives fair rotation */
+  suspectCounts: Map<string, number>;
   lastActivity: number;
 }
 
@@ -79,10 +82,6 @@ function shuffle<T>(arr: T[]): T[] {
     [out[i], out[j]] = [out[j], out[i]];
   }
   return out;
-}
-
-function pickSuspect(players: Player[]): string {
-  return players[Math.floor(Math.random() * players.length)].id;
 }
 
 function validateName(name: string): string | null {
@@ -116,6 +115,7 @@ export class GameServer extends Server<Env> {
     currentRoundNumber: 0,
     round: null,
     connectionsBySession: new Map(),
+    suspectCounts: new Map(),
     lastActivity: Date.now(),
   };
 
@@ -381,6 +381,7 @@ export class GameServer extends Server<Env> {
     this.state.totalRounds = rounds;
     this.state.currentRoundNumber = 0;
     for (const p of this.state.players.values()) p.score = 0;
+    this.state.suspectCounts = new Map();
     await this.beginNextRound();
   }
 
@@ -393,7 +394,14 @@ export class GameServer extends Server<Env> {
     this.state.currentRoundNumber += 1;
     const category = pickCategory();
     const { words, target } = generateGrid(category);
-    const suspectId = pickSuspect(players);
+    const suspectId = pickFairSuspect(
+      players.map((p) => p.id),
+      this.state.suspectCounts,
+    );
+    this.state.suspectCounts.set(
+      suspectId,
+      (this.state.suspectCounts.get(suspectId) ?? 0) + 1,
+    );
     const clueOrder = shuffle(players.map((p) => p.id));
 
     const phaseEndsAt = Date.now() + PHASE_DURATIONS_MS.reveal;
@@ -549,6 +557,7 @@ export class GameServer extends Server<Env> {
     this.state.currentRoundNumber = 0;
     this.state.totalRounds = 0;
     for (const p of this.state.players.values()) p.score = 0;
+    this.state.suspectCounts = new Map();
     await this.ctx.storage.deleteAlarm();
     this.broadcastState();
     await this.persist();
@@ -822,6 +831,7 @@ interface SerializedRoomState {
   totalRounds: number;
   currentRoundNumber: number;
   round: InternalRound | null;
+  suspectCounts: [string, number][];
   lastActivity: number;
 }
 
@@ -834,6 +844,7 @@ function serialize(state: RoomState): SerializedRoomState {
     totalRounds: state.totalRounds,
     currentRoundNumber: state.currentRoundNumber,
     round: state.round,
+    suspectCounts: [...state.suspectCounts.entries()],
     lastActivity: state.lastActivity,
   };
 }
@@ -848,6 +859,8 @@ function deserialize(s: SerializedRoomState): RoomState {
     currentRoundNumber: s.currentRoundNumber,
     round: s.round,
     connectionsBySession: new Map(),
+    // Tolerate state written by older server versions (no suspectCounts field).
+    suspectCounts: new Map(s.suspectCounts ?? []),
     lastActivity: s.lastActivity,
   };
 }
